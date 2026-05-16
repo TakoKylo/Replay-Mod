@@ -48,7 +48,6 @@ namespace PuckReplayMod
         public KeyCode PlaybackUiInputKey = KeyCode.LeftAlt;
         public KeyCode CaptureModeKey = KeyCode.F10;
         public ReplayPlaybackUiInputMode PlaybackUiInputMode = ReplayPlaybackUiInputMode.Toggle;
-        public bool EnableLegacyImport = true;
         public bool EnableDebugProfiling = false;
         public bool ShowStatusIndicator = true;
         public ReplayIndicatorVisibility StatusIndicatorVisibility = ReplayIndicatorVisibility.Always;
@@ -79,7 +78,6 @@ namespace PuckReplayMod
                 CaptureTickRate = Mathf.Clamp(PlayerPrefs.GetInt(Prefix + "CaptureTickRate", 30), 5, 120),
                 StorageLimitMb = Mathf.Max(0, PlayerPrefs.GetInt(Prefix + "StorageLimitMb", 2048)),
                 MinimumReplayLengthSeconds = Mathf.Max(0, PlayerPrefs.GetInt(Prefix + "MinimumReplayLengthSeconds", 10)),
-                EnableLegacyImport = PlayerPrefs.GetInt(Prefix + "EnableLegacyImport", 1) == 1,
                 EnableDebugProfiling = PlayerPrefs.GetInt(Prefix + "EnableDebugProfiling", 0) == 1,
                 StatusIndicatorVisibility = LoadEnum(Prefix + "StatusIndicatorVisibility", ReplayIndicatorVisibility.Always),
                 StatusIndicatorPosition = LoadEnum(Prefix + "StatusIndicatorPosition", ReplayOverlayPosition.BottomLeft),
@@ -159,7 +157,6 @@ namespace PuckReplayMod
             PlayerPrefs.SetString(Prefix + "PlaybackUiInputKey", this.PlaybackUiInputKey.ToString());
             PlayerPrefs.SetString(Prefix + "CaptureModeKey", this.CaptureModeKey.ToString());
             PlayerPrefs.SetString(Prefix + "PlaybackUiInputMode", this.PlaybackUiInputMode.ToString());
-            PlayerPrefs.SetInt(Prefix + "EnableLegacyImport", this.EnableLegacyImport ? 1 : 0);
             PlayerPrefs.SetInt(Prefix + "EnableDebugProfiling", this.EnableDebugProfiling ? 1 : 0);
             PlayerPrefs.SetInt(Prefix + "ShowStatusIndicator", this.ShowStatusIndicator ? 1 : 0);
             PlayerPrefs.SetString(Prefix + "StatusIndicatorVisibility", this.StatusIndicatorVisibility.ToString());

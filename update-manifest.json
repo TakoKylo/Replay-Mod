@@ -1,6 +1,6 @@
 {
-  "latestVersion": "0.1.0",
-  "minimumRecommendedVersion": "0.1.0",
+  "latestVersion": "0.1.1",
+  "minimumRecommendedVersion": "0.1.1",
   "downloadUrl": "https://steamcommunity.com/sharedfiles/filedetails/?id=3726818657",
-  "notes": "Current release."
+  "notes": "Removes a misleading old replay files setting. Old replay mod files are not currently supported."
 }
