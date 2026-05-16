@@ -10,6 +10,34 @@ namespace PuckReplayMod
             parent.Add(ReplayUiTools.CreateSectionTitle("On-screen Display"));
             parent.Add(ReplayUiTools.CreateNote("Choose when Replay Mod status appears and where it sits on your screen."));
 
+            parent.Add(ReplayUiTools.CreateToggleRow("Show status badge", ui.Settings.ShowStatusIndicator, delegate(bool value)
+            {
+                ui.Settings.ShowStatusIndicator = value;
+                ui.SaveSettings();
+                ui.RefreshStatusIndicator();
+            }));
+
+            parent.Add(ReplayUiTools.CreateToggleRow("Show replay time", ui.Settings.ShowPlaybackTimeline, delegate(bool value)
+            {
+                ui.Settings.ShowPlaybackTimeline = value;
+                ui.SaveSettings();
+                ui.RefreshTimelineIndicator();
+            }));
+
+            parent.Add(ReplayUiTools.CreateToggleRow("Show recorded chat", ui.Settings.ShowReplayChat, delegate(bool value)
+            {
+                ui.Settings.ShowReplayChat = value;
+                ui.SaveSettings();
+            }));
+
+            parent.Add(ReplayUiTools.CreateToggleRow("Clear chat before playback", ui.Settings.ClearChatOnPlaybackStart, delegate(bool value)
+            {
+                ui.Settings.ClearChatOnPlaybackStart = value;
+                ui.SaveSettings();
+            }));
+
+            parent.Add(ReplayUiTools.CreateSeparator());
+
             parent.Add(ReplayUiTools.CreateDropdownRow("Status badge", FormatIndicatorVisibility(ui.Settings.StatusIndicatorVisibility), GetIndicatorVisibilityChoices(), delegate(string value)
             {
                 ui.Settings.StatusIndicatorVisibility = ParseIndicatorVisibility(value);

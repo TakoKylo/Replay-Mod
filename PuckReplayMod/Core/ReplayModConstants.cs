@@ -8,5 +8,7 @@ namespace PuckReplayMod
         public const string ReplayFileExtension = ".puckreplay";
         public const string ReplaySummaryFileSuffix = ".summary.json";
         public const string ReplayMagic = "PUCK_REPLAY_V2";
+        public const string ReplayBinaryMagic = "PRB1";
+        public const int ReplayBinaryFormatVersion = 1;
     }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -20,7 +21,6 @@ namespace PuckReplayMod
             FileInfo[] files = new DirectoryInfo(replayDirectory)
                 .GetFiles("*" + ReplayModConstants.ReplayFileExtension)
                 .OrderByDescending(file => file.LastWriteTimeUtc)
-                .Take(Math.Max(0, maxCount))
                 .ToArray();
 
             foreach (FileInfo file in files)
@@ -35,7 +35,11 @@ namespace PuckReplayMod
                 }
             }
 
-            return summaries;
+            return summaries
+                .OrderByDescending(summary => summary.IsFavorite)
+                .ThenByDescending(summary => summary.LastWriteUtc)
+                .Take(Math.Max(0, maxCount))
+                .ToList();
         }
 
         public bool IndexNextMissingSummary(string replayDirectory, string summaryDirectory, int maxCount)
@@ -53,7 +57,7 @@ namespace PuckReplayMod
 
             foreach (FileInfo file in files)
             {
-                if (this.IsSummaryCacheFresh(file, summaryDirectory))
+                if (this.HasSummaryCache(file, summaryDirectory))
                 {
                     continue;
                 }
@@ -74,9 +78,12 @@ namespace PuckReplayMod
 
         public ReplayFileSummary ReadSummary(string filePath, string summaryDirectory)
         {
-            JObject root = JObject.Parse(File.ReadAllText(filePath));
-            ReplayHeaderDto header = this.ReadHeader(root);
+            bool isBinaryReplay = ReplayBinarySerializer.IsBinaryReplay(filePath);
+            ReplayHeaderDto header = isBinaryReplay
+                ? ReplayBinarySerializer.ReadHeader(filePath)
+                : this.ReadHeader(this.ReadRoot(filePath));
             FileInfo file = new FileInfo(filePath);
+            ReplayFileSummary cachedSummary = this.TryReadSummaryCache(file, summaryDirectory);
             ReplayFileSummary summary = new ReplayFileSummary
             {
                 FilePath = filePath,
@@ -84,9 +91,23 @@ namespace PuckReplayMod
                 SizeBytes = file.Length,
                 LastWriteUtc = file.LastWriteTimeUtc,
                 ServerName = header.ServerName,
+                DisplayName = cachedSummary != null ? cachedSummary.DisplayName : string.Empty,
                 RecordedBy = header.RecordedBy,
+                ReplayMagic = header.Magic,
+                ReplayFormatVersion = header.FormatVersion,
+                ReplayContainerFormat = isBinaryReplay ? ReplayModConstants.ReplayBinaryMagic : "JSON",
+                ReplayContainerVersion = isBinaryReplay ? ReplayModConstants.ReplayBinaryFormatVersion : 0,
+                ModVersion = header.ModVersion,
+                GameVersion = header.GameVersion,
+                StartedUtcTicks = header.StartedUtcTicks,
+                EndedUtcTicks = header.EndedUtcTicks,
                 TickRate = header.TickRate,
                 TotalTicks = header.TotalTicks,
+                EventCount = header.EventCount,
+                HasScoreboard = header.HasScoreboard,
+                HasChat = header.HasChat,
+                HasMarkers = header.HasMarkers,
+                IsFavorite = cachedSummary != null && cachedSummary.IsFavorite,
                 IsMetadataComplete = true
             };
 
@@ -107,9 +128,23 @@ namespace PuckReplayMod
                 SizeBytes = summary.SizeBytes,
                 LastWriteUtcTicks = summary.LastWriteUtc.Ticks,
                 ServerName = summary.ServerName,
+                DisplayName = summary.DisplayName,
                 RecordedBy = summary.RecordedBy,
+                ReplayMagic = summary.ReplayMagic,
+                ReplayFormatVersion = summary.ReplayFormatVersion,
+                ReplayContainerFormat = summary.ReplayContainerFormat,
+                ReplayContainerVersion = summary.ReplayContainerVersion,
+                ModVersion = summary.ModVersion,
+                GameVersion = summary.GameVersion,
+                StartedUtcTicks = summary.StartedUtcTicks,
+                EndedUtcTicks = summary.EndedUtcTicks,
                 TickRate = summary.TickRate,
-                TotalTicks = summary.TotalTicks
+                TotalTicks = summary.TotalTicks,
+                EventCount = summary.EventCount,
+                HasScoreboard = summary.HasScoreboard,
+                HasChat = summary.HasChat,
+                HasMarkers = summary.HasMarkers,
+                IsFavorite = summary.IsFavorite
             };
 
             string summaryPath = GetSummaryPath(summary.FilePath, summaryDirectory);
@@ -119,7 +154,12 @@ namespace PuckReplayMod
 
         public ReplaySessionData Load(string filePath)
         {
-            JObject root = JObject.Parse(File.ReadAllText(filePath));
+            if (ReplayBinarySerializer.IsBinaryReplay(filePath))
+            {
+                return ReplayBinarySerializer.Load(filePath);
+            }
+
+            JObject root = this.ReadRoot(filePath);
             ReplaySessionData session = new ReplaySessionData
             {
                 Header = this.ReadHeader(root),
@@ -147,6 +187,35 @@ namespace PuckReplayMod
             return session;
         }
 
+        private JObject ReadRoot(string filePath)
+        {
+            using (Stream stream = OpenReplayReadStream(filePath))
+            using (StreamReader streamReader = new StreamReader(stream))
+            using (JsonTextReader jsonReader = new JsonTextReader(streamReader))
+            {
+                return JObject.Load(jsonReader);
+            }
+        }
+
+        private static Stream OpenReplayReadStream(string filePath)
+        {
+            FileStream fileStream = File.OpenRead(filePath);
+            if (fileStream.Length < 2)
+            {
+                return fileStream;
+            }
+
+            int first = fileStream.ReadByte();
+            int second = fileStream.ReadByte();
+            fileStream.Position = 0L;
+            if (first == 0x1F && second == 0x8B)
+            {
+                return new GZipStream(fileStream, CompressionMode.Decompress);
+            }
+
+            return fileStream;
+        }
+
         public static string GetSummaryPath(string replayFilePath, string summaryDirectory)
         {
             return Path.Combine(summaryDirectory, Path.GetFileName(replayFilePath) + ReplayModConstants.ReplaySummaryFileSuffix);
@@ -160,18 +229,34 @@ namespace PuckReplayMod
                 return cachedSummary;
             }
 
-            return new ReplayFileSummary
+            ReplayFileSummary summary = new ReplayFileSummary
             {
                 FilePath = file.FullName,
                 FileName = file.Name,
                 SizeBytes = file.Length,
                 LastWriteUtc = file.LastWriteTimeUtc,
                 ServerName = Path.GetFileNameWithoutExtension(file.Name),
+                DisplayName = string.Empty,
                 RecordedBy = string.Empty,
+                ReplayMagic = string.Empty,
+                ReplayFormatVersion = 0,
+                ReplayContainerFormat = string.Empty,
+                ReplayContainerVersion = 0,
+                ModVersion = string.Empty,
+                GameVersion = string.Empty,
+                StartedUtcTicks = 0,
+                EndedUtcTicks = 0,
                 TickRate = 0,
                 TotalTicks = 0,
+                EventCount = 0,
+                HasScoreboard = false,
+                HasChat = false,
+                HasMarkers = false,
+                IsFavorite = false,
                 IsMetadataComplete = false
             };
+
+            return summary;
         }
 
         private ReplayFileSummary TryReadSummaryCache(FileInfo file, string summaryDirectory)
@@ -183,7 +268,7 @@ namespace PuckReplayMod
             }
 
             ReplaySummaryCache cache = JsonConvert.DeserializeObject<ReplaySummaryCache>(File.ReadAllText(summaryPath));
-            if (cache == null || cache.SizeBytes != file.Length || cache.LastWriteUtcTicks != file.LastWriteTimeUtc.Ticks)
+            if (cache == null)
             {
                 return null;
             }
@@ -192,19 +277,33 @@ namespace PuckReplayMod
             {
                 FilePath = file.FullName,
                 FileName = file.Name,
-                SizeBytes = file.Length,
-                LastWriteUtc = file.LastWriteTimeUtc,
+                SizeBytes = cache.SizeBytes > 0 ? cache.SizeBytes : file.Length,
+                LastWriteUtc = cache.LastWriteUtcTicks > 0 ? new DateTime(cache.LastWriteUtcTicks, DateTimeKind.Utc) : file.LastWriteTimeUtc,
                 ServerName = cache.ServerName,
+                DisplayName = cache.DisplayName,
                 RecordedBy = cache.RecordedBy,
+                ReplayMagic = cache.ReplayMagic,
+                ReplayFormatVersion = cache.ReplayFormatVersion,
+                ReplayContainerFormat = cache.ReplayContainerFormat,
+                ReplayContainerVersion = cache.ReplayContainerVersion,
+                ModVersion = cache.ModVersion,
+                GameVersion = cache.GameVersion,
+                StartedUtcTicks = cache.StartedUtcTicks,
+                EndedUtcTicks = cache.EndedUtcTicks,
                 TickRate = cache.TickRate,
                 TotalTicks = cache.TotalTicks,
+                EventCount = cache.EventCount,
+                HasScoreboard = cache.HasScoreboard,
+                HasChat = cache.HasChat,
+                HasMarkers = cache.HasMarkers,
+                IsFavorite = cache.IsFavorite,
                 IsMetadataComplete = true
             };
         }
 
-        private bool IsSummaryCacheFresh(FileInfo file, string summaryDirectory)
+        private bool HasSummaryCache(FileInfo file, string summaryDirectory)
         {
-            return this.TryReadSummaryCache(file, summaryDirectory) != null;
+            return File.Exists(GetSummaryPath(file.FullName, summaryDirectory));
         }
 
         private ReplayHeaderDto ReadHeader(JObject root)

@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -13,6 +15,7 @@ namespace PuckReplayMod
         private readonly ReplayStorageService storage;
         private readonly List<Player> activeBodyPlayers = new List<Player>(16);
         private readonly List<Puck> activePucks = new List<Puck>(16);
+        private readonly List<Task<ReplaySaveResult>> pendingSaveTasks = new List<Task<ReplaySaveResult>>();
 
         private ReplaySessionData currentSession;
         private float tickAccumulator;
@@ -20,6 +23,7 @@ namespace PuckReplayMod
         private int currentTick;
         private bool initialized;
         private bool isRecordingSuppressed;
+        private bool autoRecordingPausedByManualStop;
         private bool startRequested;
         private bool scoreboardSnapshotRequested;
         private bool firstTickLogged;
@@ -80,6 +84,8 @@ namespace PuckReplayMod
 
         public void Tick(float deltaTime)
         {
+            this.PollPendingSaves();
+
             if (this.startRequested && !this.IsRecording)
             {
                 string reason = string.IsNullOrEmpty(this.startReason) ? "gameplay observed" : this.startReason;
@@ -88,7 +94,12 @@ namespace PuckReplayMod
                 this.StartRecording(reason);
             }
 
-            if (this.settings.AutoRecord && this.IsMarkerKeyPressed())
+            if (this.settings.EnableManualRecordingHotkey && this.IsKeyPressed(this.settings.ManualRecordingKey))
+            {
+                this.ToggleManualRecording();
+            }
+
+            if (this.IsRecording && this.IsKeyPressed(this.settings.MarkerKey))
             {
                 this.AddMarker();
             }
@@ -171,7 +182,39 @@ namespace PuckReplayMod
 
         public void StartRecording(string reason)
         {
-            if (this.IsRecording || !this.settings.AutoRecord || this.isRecordingSuppressed)
+            this.StartRecording(reason, false);
+        }
+
+        public void StartManualRecording()
+        {
+            if (!this.IsInGame())
+            {
+                ReplayModLog.Info("Manual recording was ignored because no game session is active.");
+                return;
+            }
+
+            this.autoRecordingPausedByManualStop = false;
+            this.startRequested = false;
+            this.startReason = null;
+            this.StartRecording("manual hotkey", true);
+        }
+
+        public void StopManualRecording()
+        {
+            if (!this.IsRecording)
+            {
+                return;
+            }
+
+            this.autoRecordingPausedByManualStop = true;
+            this.startRequested = false;
+            this.startReason = null;
+            this.StopRecording(true, "manual hotkey");
+        }
+
+        private void StartRecording(string reason, bool ignoreAutoRecord)
+        {
+            if (this.IsRecording || (!ignoreAutoRecord && !this.settings.AutoRecord) || this.isRecordingSuppressed)
             {
                 return;
             }
@@ -230,9 +273,11 @@ namespace PuckReplayMod
                 }
                 else
                 {
-                    this.storage.SaveReplay(session);
-                    this.storage.CleanupShortReplays(this.settings.MinimumReplayLengthSeconds);
-                    this.storage.CleanupOldReplays(this.settings.StorageLimitMb);
+                    this.pendingSaveTasks.Add(this.storage.SaveReplayAsync(session, this.settings.MinimumReplayLengthSeconds, this.settings.StorageLimitMb));
+                    ReplayModLog.Info(
+                        "Queued replay save in background (" +
+                        durationSeconds.ToString("0.0") + "s, " +
+                        session.Events.Count + " events).");
                 }
             }
 
@@ -280,6 +325,37 @@ namespace PuckReplayMod
             if (recordingStateChanged != null)
             {
                 recordingStateChanged();
+            }
+        }
+
+        private void PollPendingSaves()
+        {
+            for (int i = this.pendingSaveTasks.Count - 1; i >= 0; i--)
+            {
+                Task<ReplaySaveResult> task = this.pendingSaveTasks[i];
+                if (!task.IsCompleted)
+                {
+                    continue;
+                }
+
+                this.pendingSaveTasks.RemoveAt(i);
+                if (task.IsFaulted)
+                {
+                    ReplayModLog.Warning("Background replay save failed: " + task.Exception.GetBaseException().Message);
+                    continue;
+                }
+
+                ReplaySaveResult result = task.Result;
+                if (result == null || !result.Success)
+                {
+                    ReplayModLog.Warning("Background replay save failed: " + (result != null ? result.ErrorMessage : "unknown error"));
+                    continue;
+                }
+
+                ReplayModLog.Info(
+                    "Saved replay in background: " + result.FilePath +
+                    " (" + result.SizeBytes + " bytes, " +
+                    result.ElapsedMilliseconds + "ms).");
             }
         }
 
@@ -335,6 +411,7 @@ namespace PuckReplayMod
 
         private void Event_OnClientStopped(Dictionary<string, object> message)
         {
+            this.autoRecordingPausedByManualStop = false;
             this.StopRecording(true, "client stopped");
             this.ClearActiveObjects();
         }
@@ -521,6 +598,11 @@ namespace PuckReplayMod
         private bool EnsureRecording(string reason)
         {
             if (this.isRecordingSuppressed)
+            {
+                return false;
+            }
+
+            if (this.autoRecordingPausedByManualStop)
             {
                 return false;
             }
@@ -912,7 +994,18 @@ namespace PuckReplayMod
             this.nextCaptureProfileRealtime += 2f;
         }
 
-        private bool IsMarkerKeyPressed()
+        private void ToggleManualRecording()
+        {
+            if (this.IsRecording)
+            {
+                this.StopManualRecording();
+                return;
+            }
+
+            this.StartManualRecording();
+        }
+
+        private bool IsKeyPressed(KeyCode keyCode)
         {
             try
             {
@@ -923,7 +1016,7 @@ namespace PuckReplayMod
                 }
 
                 Key key;
-                if (!this.TryConvertMarkerKey(this.settings.MarkerKey, out key))
+                if (!this.TryConvertKey(keyCode, out key))
                 {
                     return false;
                 }
@@ -935,14 +1028,14 @@ namespace PuckReplayMod
                 if (!this.markerInputFailureLogged)
                 {
                     this.markerInputFailureLogged = true;
-                    ReplayModLog.Warning("Marker hotkey polling failed: " + exception.Message);
+                    ReplayModLog.Warning("Replay hotkey polling failed: " + exception.Message);
                 }
 
                 return false;
             }
         }
 
-        private bool TryConvertMarkerKey(KeyCode keyCode, out Key key)
+        private bool TryConvertKey(KeyCode keyCode, out Key key)
         {
             string keyName = keyCode.ToString();
             if (keyName.StartsWith("Alpha", StringComparison.Ordinal))
@@ -956,6 +1049,12 @@ namespace PuckReplayMod
             }
 
             return false;
+        }
+
+        private bool IsInGame()
+        {
+            NetworkManager networkManager = NetworkManager.Singleton;
+            return networkManager != null && (networkManager.IsClient || networkManager.IsServer || networkManager.IsListening);
         }
 
         private bool ShouldSkipPlayer(Player player)

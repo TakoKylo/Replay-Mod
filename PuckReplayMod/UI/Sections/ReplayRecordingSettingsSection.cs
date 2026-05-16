@@ -12,7 +12,11 @@ namespace PuckReplayMod
             parent.Add(ReplayUiTools.CreateSectionTitle("Recording"));
             parent.Add(ReplayUiTools.CreateNote("Control when replay files are created. The default settings are a good fit for most players."));
 
-            parent.Add(ReplayUiTools.CreateToggleRow("Record games automatically", ui.Settings.AutoRecord, delegate(bool value)
+            parent.Add(ReplayUiTools.CreateToggleRow(
+                "Record games automatically",
+                "Starts recording when you join a match and saves when you leave.",
+                ui.Settings.AutoRecord,
+                delegate(bool value)
             {
                 ui.Settings.AutoRecord = value;
                 if (!value && ui.Recorder.IsRecording)
@@ -23,7 +27,12 @@ namespace PuckReplayMod
                 ui.SaveSettings();
             }));
 
-            parent.Add(ReplayUiTools.CreateDropdownRow("Replay smoothness", FormatCaptureRate(ui.Settings.CaptureTickRate), GetCaptureRateChoices(), delegate(string value)
+            parent.Add(ReplayUiTools.CreateDropdownRow(
+                "Record rate",
+                GetCaptureRateTooltip(ui.Settings.CaptureTickRate),
+                FormatCaptureRate(ui.Settings.CaptureTickRate),
+                GetCaptureRateChoices(),
+                delegate(string value)
             {
                 int parsed = ParseCaptureRate(value);
                 if (parsed <= 0)
@@ -40,37 +49,15 @@ namespace PuckReplayMod
                 ui.Settings.CaptureTickRate = Mathf.Clamp(parsed, 5, 120);
                 ui.SaveSettings();
             }));
-
-            parent.Add(ReplayUiTools.CreateDropdownRow("Marker shortcut", ui.Settings.MarkerKey.ToString(), GetFunctionKeyChoices(), delegate(string value)
-            {
-                KeyCode parsed;
-                if (Enum.TryParse(value, true, out parsed))
-                {
-                    ui.Settings.MarkerKey = parsed;
-                    ui.SaveSettings();
-                }
-            }));
-
-            parent.Add(ReplayUiTools.CreateSeparator());
-
-            parent.Add(ReplayUiTools.CreateNote("Markers let you flag a moment while recording so it is easier to find later."));
-
-            Button markerButton = ReplayUiTools.CreateButton("ADD MARKER", delegate
-            {
-                ui.Recorder.AddMarker();
-            });
-            markerButton.SetEnabled(ui.Recorder.IsRecording);
-            markerButton.style.width = 220f;
-            parent.Add(markerButton);
         }
 
         private static List<string> GetCaptureRateChoices()
         {
             return new List<string>
             {
-                "Low (smaller files)",
-                "Standard",
-                "High (smoother)"
+                "15 Hz - smaller files",
+                "30 Hz - standard",
+                "60 Hz - smoother"
             };
         }
 
@@ -78,23 +65,25 @@ namespace PuckReplayMod
         {
             if (tickRate <= 15)
             {
-                return "Low (smaller files)";
+                return "15 Hz - smaller files";
             }
 
             if (tickRate >= 60)
             {
-                return "High (smoother)";
+                return "60 Hz - smoother";
             }
 
-            return "Standard";
+            return "30 Hz - standard";
         }
 
         private static int ParseCaptureRate(string value)
         {
             switch (value)
             {
+                case "15 Hz - smaller files":
                 case "Low (smaller files)":
                     return 15;
+                case "60 Hz - smoother":
                 case "High (smoother)":
                     return 60;
                 default:
@@ -102,7 +91,22 @@ namespace PuckReplayMod
             }
         }
 
-        private static List<string> GetFunctionKeyChoices()
+        private static string GetCaptureRateTooltip(int tickRate)
+        {
+            int normalizedRate = ParseCaptureRate(FormatCaptureRate(tickRate));
+            return "Current: " + normalizedRate + " transform samples per second. " +
+                "Estimated size for a typical match: 15 Hz ~" + EstimateMegabytesPerHour(15).ToString("0") +
+                " MB/hour, 30 Hz ~" + EstimateMegabytesPerHour(30).ToString("0") +
+                " MB/hour, 60 Hz ~" + EstimateMegabytesPerHour(60).ToString("0") +
+                " MB/hour. Actual size depends on player count, puck count, and activity.";
+        }
+
+        private static float EstimateMegabytesPerHour(int tickRate)
+        {
+            return Mathf.Max(1, tickRate) * 2.9f;
+        }
+
+        internal static List<string> GetFunctionKeyChoices()
         {
             return new List<string>
             {

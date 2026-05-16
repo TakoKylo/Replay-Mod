@@ -39,6 +39,16 @@ namespace PuckReplayMod
             get { return this.nativePlayback.CurrentTick; }
         }
 
+        public bool IsPaused
+        {
+            get { return this.nativePlayback.IsPaused; }
+        }
+
+        public float PlaybackSpeed
+        {
+            get { return this.nativePlayback.PlaybackSpeed; }
+        }
+
         public string PlaybackMode
         {
             get
@@ -151,6 +161,31 @@ namespace PuckReplayMod
                 ReplayModLog.Info("Native replay playback reached the end.");
                 this.Close();
             }
+        }
+
+        public void TogglePause()
+        {
+            if (!this.IsPlaying || this.isPreparingNativePlayback)
+            {
+                return;
+            }
+
+            this.nativePlayback.SetPaused(!this.nativePlayback.IsPaused);
+        }
+
+        public void SetPlaybackSpeed(float speed)
+        {
+            this.nativePlayback.SetPlaybackSpeed(speed);
+        }
+
+        public void SeekToTick(int tick)
+        {
+            if (!this.IsPlaying || this.isPreparingNativePlayback)
+            {
+                return;
+            }
+
+            this.nativePlayback.SeekToTick(Mathf.Clamp(tick, 0, this.TotalTicks));
         }
 
         public void Close()

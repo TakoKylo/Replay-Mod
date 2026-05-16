@@ -28,11 +28,21 @@ namespace PuckReplayMod
 
         public static Label CreateConfigurationLabel(string text)
         {
+            return CreateConfigurationLabel(text, null);
+        }
+
+        public static Label CreateConfigurationLabel(string text, string tooltip)
+        {
             Label label = new Label(text);
             label.style.fontSize = 15f;
             label.style.color = BodyTextColor;
             label.style.whiteSpace = WhiteSpace.Normal;
             label.style.flexGrow = 1f;
+            if (!string.IsNullOrEmpty(tooltip))
+            {
+                label.tooltip = tooltip;
+            }
+
             return label;
         }
 
@@ -197,25 +207,47 @@ namespace PuckReplayMod
 
         public static VisualElement CreateToggleRow(string labelText, bool value, Action<bool> onChanged)
         {
+            return CreateToggleRow(labelText, null, value, onChanged);
+        }
+
+        public static VisualElement CreateToggleRow(string labelText, string tooltip, bool value, Action<bool> onChanged)
+        {
             VisualElement row = CreateConfigurationRow();
-            row.Add(CreateConfigurationLabel(labelText));
+            row.tooltip = tooltip ?? string.Empty;
+            row.Add(CreateConfigurationLabel(labelText, tooltip));
             row.Add(CreateToggle(value, onChanged));
             return row;
         }
 
         public static VisualElement CreateDropdownRow(string labelText, string value, List<string> choices, Action<string> onChanged)
         {
+            return CreateDropdownRow(labelText, null, value, choices, onChanged);
+        }
+
+        public static VisualElement CreateDropdownRow(string labelText, string tooltip, string value, List<string> choices, Action<string> onChanged)
+        {
             VisualElement row = CreateConfigurationRow();
-            row.Add(CreateConfigurationLabel(labelText));
-            row.Add(CreateDropdown(choices, value, onChanged));
+            row.tooltip = tooltip ?? string.Empty;
+            row.Add(CreateConfigurationLabel(labelText, tooltip));
+            PopupField<string> dropdown = CreateDropdown(choices, value, onChanged);
+            dropdown.tooltip = tooltip ?? string.Empty;
+            row.Add(dropdown);
             return row;
         }
 
         public static VisualElement CreateIntegerRow(string labelText, int value, Action<int> onChanged)
         {
+            return CreateIntegerRow(labelText, null, value, onChanged);
+        }
+
+        public static VisualElement CreateIntegerRow(string labelText, string tooltip, int value, Action<int> onChanged)
+        {
             VisualElement row = CreateConfigurationRow();
-            row.Add(CreateConfigurationLabel(labelText));
-            row.Add(CreateIntegerField(value, onChanged));
+            row.tooltip = tooltip ?? string.Empty;
+            row.Add(CreateConfigurationLabel(labelText, tooltip));
+            IntegerField field = CreateIntegerField(value, onChanged);
+            field.tooltip = tooltip ?? string.Empty;
+            row.Add(field);
             return row;
         }
 
