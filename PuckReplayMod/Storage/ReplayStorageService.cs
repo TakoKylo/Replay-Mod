@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using UnityEngine;
@@ -25,16 +27,39 @@ namespace PuckReplayMod
 
         public string ExportsDirectory { get; private set; }
 
+        // On a dedicated server the replays and the oomtm stats files live side by side in the
+        // Puck server directory. The stats mod copies its timestamp into a "stats" folder; we
+        // adopt it so each replay pairs with the matching stats JSON.
+        private const string ServerReplaysFolderName = "ServerReplays";
+        private const string ServerStatsFolderName = "stats";
+        private const int ServerStatsMatchWindowSeconds = 10;
+        private const string ServerTimestampFallbackFormat = "dd-MM-yyyy_HH-mm-ss";
+
         private readonly object saveLock = new object();
 
-        public void Initialize()
+        private bool isDedicatedServer;
+        private string gameInstallDirectory;
+
+        public void Initialize(bool isDedicatedServer)
         {
-            this.RootDirectory = Path.Combine(Application.persistentDataPath, "PuckReplayMod");
-            this.ReplaysDirectory = Path.Combine(this.RootDirectory, "Replays");
-            this.SummariesDirectory = Path.Combine(this.RootDirectory, "Summaries");
-            this.TempDirectory = Path.Combine(this.RootDirectory, "Temp");
-            this.ImportsDirectory = Path.Combine(this.RootDirectory, "Imports");
-            this.ExportsDirectory = Path.Combine(this.RootDirectory, "Exports");
+            this.isDedicatedServer = isDedicatedServer;
+            // Resolve the install directory on the main thread; Application.* cannot be read from
+            // the background save thread where the stats handshake later runs.
+            this.gameInstallDirectory = GetGameInstallDirectory();
+
+            if (isDedicatedServer && this.TryInitializeServerStorage())
+            {
+                // Server storage was rooted in the Puck server directory.
+            }
+            else
+            {
+                this.RootDirectory = Path.Combine(Application.persistentDataPath, "PuckReplayMod");
+                this.ReplaysDirectory = Path.Combine(this.RootDirectory, "Replays");
+                this.SummariesDirectory = Path.Combine(this.RootDirectory, "Summaries");
+                this.TempDirectory = Path.Combine(this.RootDirectory, "Temp");
+                this.ImportsDirectory = Path.Combine(this.RootDirectory, "Imports");
+                this.ExportsDirectory = Path.Combine(this.RootDirectory, "Exports");
+            }
 
             Directory.CreateDirectory(this.RootDirectory);
             Directory.CreateDirectory(this.ReplaysDirectory);
@@ -42,6 +67,97 @@ namespace PuckReplayMod
             Directory.CreateDirectory(this.TempDirectory);
             Directory.CreateDirectory(this.ImportsDirectory);
             Directory.CreateDirectory(this.ExportsDirectory);
+        }
+
+        private bool TryInitializeServerStorage()
+        {
+            try
+            {
+                string serverDirectory = this.ResolveServerDirectory();
+                if (string.IsNullOrEmpty(serverDirectory))
+                {
+                    return false;
+                }
+
+                string replaysDirectory = Path.Combine(serverDirectory, ServerReplaysFolderName);
+                if (!TryEnsureWritableDirectory(replaysDirectory))
+                {
+                    ReplayModLog.Warning("Server replay directory is not writable: " + replaysDirectory + ". Falling back to the default data folder.");
+                    return false;
+                }
+
+                this.RootDirectory = replaysDirectory;
+                this.ReplaysDirectory = replaysDirectory;
+                this.SummariesDirectory = Path.Combine(replaysDirectory, "Summaries");
+                this.TempDirectory = Path.Combine(replaysDirectory, "Temp");
+                this.ImportsDirectory = Path.Combine(replaysDirectory, "Imports");
+                this.ExportsDirectory = Path.Combine(replaysDirectory, "Exports");
+                ReplayModLog.Info("Server-side replays will be saved to: " + replaysDirectory);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                ReplayModLog.Warning("Failed to root replays in the server directory; using the default data folder instead: " + exception.Message);
+                return false;
+            }
+        }
+
+        // The oomtm stats mod (and the uploader) work relative to the server's working directory,
+        // which is usually the install directory but not always. Prefer whichever candidate already
+        // holds the "stats" folder so replays sit beside it; otherwise use the first writable one.
+        private string ResolveServerDirectory()
+        {
+            List<string> candidates = this.GetServerRootCandidates();
+            foreach (string root in candidates)
+            {
+                if (Directory.Exists(Path.Combine(root, ServerStatsFolderName)))
+                {
+                    return root;
+                }
+            }
+
+            foreach (string root in candidates)
+            {
+                if (TryEnsureWritableDirectory(root))
+                {
+                    return root;
+                }
+            }
+
+            return candidates.Count > 0 ? candidates[0] : null;
+        }
+
+        private static string GetGameInstallDirectory()
+        {
+            try
+            {
+                DirectoryInfo parent = Directory.GetParent(Application.dataPath);
+                if (parent != null)
+                {
+                    return parent.FullName;
+                }
+            }
+            catch
+            {
+            }
+
+            return Application.dataPath;
+        }
+
+        private static bool TryEnsureWritableDirectory(string directory)
+        {
+            try
+            {
+                Directory.CreateDirectory(directory);
+                string probePath = Path.Combine(directory, ".write_test_" + Guid.NewGuid().ToString("N"));
+                File.WriteAllText(probePath, string.Empty);
+                File.Delete(probePath);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public string SaveReplay(ReplaySessionData session)
@@ -92,13 +208,12 @@ namespace PuckReplayMod
         private ReplaySaveResult SaveReplayCore(ReplaySessionData session, int minimumLengthSeconds, int storageLimitMb)
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
-            string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
-            string finalPath = Path.Combine(this.ReplaysDirectory, "replay_" + stamp + ReplayModConstants.ReplayFileExtension);
+            string finalPath = this.GetUniqueFilePath(this.ReplaysDirectory, this.BuildReplayFileName(session != null ? session.Header : null));
             string tempPath = Path.Combine(this.TempDirectory, Path.GetFileName(finalPath) + ".tmp");
 
-            if (File.Exists(finalPath))
+            if (File.Exists(tempPath))
             {
-                File.Delete(finalPath);
+                File.Delete(tempPath);
             }
 
             try
@@ -154,10 +269,7 @@ namespace PuckReplayMod
         private ReplaySaveResult FinalizeChunkedReplayCore(ReplayChunkedRecordingWriter writer, ReplayHeaderDto header, int minimumLengthSeconds, int storageLimitMb)
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
-            string stamp = header != null && header.StartedUtcTicks > 0L
-                ? new DateTime(header.StartedUtcTicks, DateTimeKind.Utc).ToString("yyyyMMdd_HHmmss")
-                : DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
-            string finalPath = this.GetUniqueFilePath(this.ReplaysDirectory, "replay_" + stamp + ReplayModConstants.ReplayFileExtension);
+            string finalPath = this.GetUniqueFilePath(this.ReplaysDirectory, this.BuildReplayFileName(header));
 
             try
             {
@@ -1011,6 +1123,171 @@ namespace PuckReplayMod
             }
 
             return file;
+        }
+
+        private string BuildReplayFileName(ReplayHeaderDto header)
+        {
+            if (this.isDedicatedServer)
+            {
+                return this.BuildServerReplayFileName(header);
+            }
+
+            string stamp = header != null && header.StartedUtcTicks > 0L
+                ? new DateTime(header.StartedUtcTicks, DateTimeKind.Utc).ToString("yyyyMMdd_HHmmss")
+                : DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
+            return "replay_" + stamp + ReplayModConstants.ReplayFileExtension;
+        }
+
+        // Server replays are named "match[_<server-slug>]_<timestamp>" so the uploader can tell
+        // which server a file came from and pair it with the matching oomtm stats JSON. The
+        // timestamp is copied verbatim from the freshest stats file when one is present.
+        private string BuildServerReplayFileName(ReplayHeaderDto header)
+        {
+            string slug = SanitizeServerSlug(header != null ? header.ServerName : null);
+            string timestamp = this.TryAdoptStatsTimestamp();
+            if (string.IsNullOrEmpty(timestamp))
+            {
+                timestamp = DateTime.UtcNow.ToString(ServerTimestampFallbackFormat, CultureInfo.InvariantCulture);
+            }
+
+            string baseName = "match"
+                + (string.IsNullOrEmpty(slug) ? string.Empty : "_" + slug)
+                + "_" + timestamp;
+            return baseName + ReplayModConstants.ReplayFileExtension;
+        }
+
+        // Read the freshest "*_stats.json" / "oomtm450_stats_*.json" in the server's stats folder
+        // and return its timestamp segment verbatim, or null if none is recent enough. Runs on the
+        // background save thread, so it must not touch any Unity API.
+        private string TryAdoptStatsTimestamp()
+        {
+            try
+            {
+                DateTime now = DateTime.UtcNow;
+                foreach (string root in this.GetServerRootCandidates())
+                {
+                    string statsDirectory = Path.Combine(root, ServerStatsFolderName);
+                    if (!Directory.Exists(statsDirectory))
+                    {
+                        continue;
+                    }
+
+                    List<FileInfo> candidates = Directory.GetFiles(statsDirectory, "*_stats.json")
+                        .Concat(Directory.GetFiles(statsDirectory, "oomtm450_stats_*.json"))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Select(path => new FileInfo(path))
+                        .Where(file => file.Exists && (now - file.LastWriteTimeUtc).Duration().TotalSeconds <= ServerStatsMatchWindowSeconds)
+                        .OrderByDescending(file => file.LastWriteTimeUtc)
+                        .ToList();
+
+                    foreach (FileInfo file in candidates)
+                    {
+                        string timestamp = ExtractStatsTimestampSegment(file.Name);
+                        if (!string.IsNullOrEmpty(timestamp))
+                        {
+                            return timestamp;
+                        }
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                ReplayModLog.Warning("Replay stats timestamp handshake failed: " + exception.Message);
+            }
+
+            return null;
+        }
+
+        private List<string> GetServerRootCandidates()
+        {
+            List<string> roots = new List<string>(3);
+            try
+            {
+                TryAddRoot(roots, Directory.GetCurrentDirectory());
+            }
+            catch
+            {
+            }
+
+            TryAddRoot(roots, this.gameInstallDirectory);
+
+            try
+            {
+                TryAddRoot(roots, AppDomain.CurrentDomain.BaseDirectory);
+            }
+            catch
+            {
+            }
+
+            return roots;
+        }
+
+        private static void TryAddRoot(List<string> roots, string path)
+        {
+            if (string.IsNullOrEmpty(path))
+            {
+                return;
+            }
+
+            try
+            {
+                string full = Path.GetFullPath(path);
+                if (!roots.Contains(full))
+                {
+                    roots.Add(full);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        // "oomtm450_stats_23-04-2026_14-30-22.json" -> "23-04-2026_14-30-22"
+        // "<header>_20260423_143022_stats.json"     -> "20260423_143022"
+        private static string ExtractStatsTimestampSegment(string fileName)
+        {
+            const string legacyPrefix = "oomtm450_stats_";
+            const string currentSuffix = "_stats.json";
+            const string jsonExtension = ".json";
+
+            if (fileName.StartsWith(legacyPrefix, StringComparison.OrdinalIgnoreCase) &&
+                fileName.EndsWith(jsonExtension, StringComparison.OrdinalIgnoreCase))
+            {
+                return fileName.Substring(legacyPrefix.Length, fileName.Length - legacyPrefix.Length - jsonExtension.Length);
+            }
+
+            if (fileName.EndsWith(currentSuffix, StringComparison.OrdinalIgnoreCase))
+            {
+                string stem = fileName.Substring(0, fileName.Length - currentSuffix.Length);
+                // <header>_<ts> — the timestamp is after the last underscore.
+                int lastUnderscore = stem.LastIndexOf('_');
+                if (lastUnderscore > 0 && lastUnderscore < stem.Length - 1)
+                {
+                    return stem.Substring(lastUnderscore + 1);
+                }
+            }
+
+            return null;
+        }
+
+        private static string SanitizeServerSlug(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return "puck";
+            }
+
+            // Strip HTML/color tags the way the stats mod does, then keep only filename-safe chars.
+            name = Regex.Replace(name, "<[^>]+>", string.Empty);
+            name = Regex.Replace(name, "[^A-Za-z0-9_-]", "-");
+            name = Regex.Replace(name, "-+", "-");
+            name = name.Trim('-').ToLowerInvariant();
+            if (name.Length > 32)
+            {
+                name = name.Substring(0, 32).TrimEnd('-');
+            }
+
+            return string.IsNullOrEmpty(name) ? "puck" : name;
         }
 
         private string GetUniqueFilePath(string directory, string fileName)

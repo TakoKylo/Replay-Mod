@@ -48,6 +48,7 @@ namespace PuckReplayMod
         public bool EnableManualRecordingHotkey = true;
         public bool SaveOnDisconnect = true;
         public bool SplitRecordingsByGameEnd = false;
+        public bool RecordOnlyDuringGames = true;
         public bool EnableServerSideRecording = true;
         public int CaptureTickRate = 30;
         public int MinimumPlayersToAutoRecord = 1;
@@ -103,6 +104,7 @@ namespace PuckReplayMod
                 EnableManualRecordingHotkey = true,
                 SaveOnDisconnect = saveOnDisconnect,
                 SplitRecordingsByGameEnd = splitRecordingsByGameEnd,
+                RecordOnlyDuringGames = PlayerPrefs.GetInt(Prefix + "RecordOnlyDuringGames", 1) == 1,
                 EnableServerSideRecording = PlayerPrefs.GetInt(Prefix + "EnableServerSideRecording", 1) == 1,
                 CaptureTickRate = Mathf.Clamp(PlayerPrefs.GetInt(Prefix + "CaptureTickRate", 30), 5, 120),
                 MinimumPlayersToAutoRecord = Mathf.Clamp(PlayerPrefs.GetInt(Prefix + "MinimumPlayersToAutoRecord", 1), 1, 64),
@@ -186,6 +188,7 @@ namespace PuckReplayMod
             PlayerPrefs.SetInt(Prefix + "EnableManualRecordingHotkey", 1);
             PlayerPrefs.SetInt(Prefix + "SaveOnDisconnect", this.SaveOnDisconnect ? 1 : 0);
             PlayerPrefs.SetInt(Prefix + "SplitRecordingsByGameEnd", this.SplitRecordingsByGameEnd ? 1 : 0);
+            PlayerPrefs.SetInt(Prefix + "RecordOnlyDuringGames", this.RecordOnlyDuringGames ? 1 : 0);
             PlayerPrefs.SetInt(Prefix + "EnableServerSideRecording", this.EnableServerSideRecording ? 1 : 0);
             PlayerPrefs.SetInt(Prefix + "CaptureTickRate", Mathf.Clamp(this.CaptureTickRate, 5, 120));
             PlayerPrefs.SetInt(Prefix + "MinimumPlayersToAutoRecord", Mathf.Clamp(this.MinimumPlayersToAutoRecord, 1, 64));

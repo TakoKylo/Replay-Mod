@@ -58,6 +58,18 @@ namespace PuckReplayMod
             parent.Add(ReplayUiTools.CreateSeparator());
             parent.Add(ReplayUiTools.CreateHeader("Automatic Rules"));
 
+            parent.Add(CreateToggleRow(
+                "Only record during games",
+                "When enabled, automatic recording starts only once a match is underway and skips warmup, pre-game, and intermission. Turn this off to also record warmup. Manual recording ignores this rule.",
+                ui.Settings.RecordOnlyDuringGames,
+                out _,
+                delegate(bool value)
+            {
+                ui.Settings.RecordOnlyDuringGames = value;
+                ui.SaveSettings();
+                ui.RefreshStatusIndicator();
+            }));
+
             parent.Add(ReplayUiTools.CreateIntegerRow(
                 "Minimum players to record",
                 "Automatic recording starts once at least this many non-replay players are in the server. It does not stop if the player count later drops. Manual recording ignores this limit.",

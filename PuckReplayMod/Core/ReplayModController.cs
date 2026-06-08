@@ -66,7 +66,7 @@ namespace PuckReplayMod
             this.IsDedicatedServer = ApplicationManager.IsDedicatedGameServer;
             this.Settings = ReplayModSettings.Load();
             this.Storage = new ReplayStorageService();
-            this.Storage.Initialize();
+            this.Storage.Initialize(this.IsDedicatedServer);
             this.Reader = new ReplayFileReader();
             this.Recorder = new ClientReplayRecorder(this.Settings, this.Storage, this.IsDedicatedServer);
             this.Recorder.Initialize();

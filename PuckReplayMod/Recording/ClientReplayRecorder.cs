@@ -242,6 +242,11 @@ namespace PuckReplayMod
                 return;
             }
 
+            if (!ignoreAutoRecord && !this.AllowAutoRecordStartNow())
+            {
+                return;
+            }
+
             this.currentTick = 0;
             this.tickAccumulator = 0f;
             this.lastRealtime = Time.realtimeSinceStartup;
@@ -546,16 +551,16 @@ namespace PuckReplayMod
         {
             Player player = message["player"] as Player;
             this.RemoveActivePlayer(player);
-            if (this.ShouldSkipPlayer(player))
+            if (!this.ShouldSkipPlayer(player))
             {
-                return;
+                this.RecordEvent("PlayerDespawned", new PlayerLifecyclePayload
+                {
+                    Player = this.BuildPlayerSnapshot(player)
+                });
+                this.RequestScoreboardSnapshot();
             }
 
-            this.RecordEvent("PlayerDespawned", new PlayerLifecyclePayload
-            {
-                Player = this.BuildPlayerSnapshot(player)
-            });
-            this.RequestScoreboardSnapshot();
+            this.StopRecordingIfNoPlayersRemain(player);
         }
 
         private void Event_Everyone_OnPlayerStateChanged(Dictionary<string, object> message)
@@ -773,6 +778,11 @@ namespace PuckReplayMod
                 return false;
             }
 
+            if (!this.AllowAutoRecordStartNow())
+            {
+                return false;
+            }
+
             this.startRequested = true;
             if (string.IsNullOrEmpty(this.startReason))
             {
@@ -858,13 +868,13 @@ namespace PuckReplayMod
                 return;
             }
 
-            if (this.settings == null || !IsAutomaticRecordingEnabled(this.settings) || !this.IsInGame() || !this.HasEnoughPlayersToAutoRecord())
+            if (this.settings == null || !IsAutomaticRecordingEnabled(this.settings) || !this.IsInGame() || !this.HasEnoughPlayersToAutoRecord() || !this.AllowAutoRecordStartNow())
             {
                 return;
             }
 
             this.startRequested = true;
-            this.startReason = "minimum player threshold reached";
+            this.startReason = this.settings.RecordOnlyDuringGames ? "game in progress" : "minimum player threshold reached";
         }
 
         private void RecordTransformFrame()
@@ -1460,6 +1470,62 @@ namespace PuckReplayMod
         {
             NetworkManager networkManager = NetworkManager.Singleton;
             return networkManager != null && (networkManager.IsClient || networkManager.IsServer || networkManager.IsListening);
+        }
+
+        private void StopRecordingIfNoPlayersRemain(Player despawningPlayer)
+        {
+            if (!this.IsRecording)
+            {
+                return;
+            }
+
+            if (this.HasAnyConnectedPlayer(despawningPlayer))
+            {
+                return;
+            }
+
+            // The server (or host) is now empty, so close out and keep the match that was captured
+            // instead of letting it run on against an empty rink.
+            this.currentRecordingSaveConfirmed = true;
+            this.StopRecording(true, "all players disconnected");
+        }
+
+        private bool HasAnyConnectedPlayer(Player excludedPlayer)
+        {
+            PlayerManager playerManager = MonoBehaviourSingleton<PlayerManager>.Instance;
+            if (playerManager == null)
+            {
+                return false;
+            }
+
+            List<Player> players = playerManager.GetPlayers(false);
+            for (int i = 0; i < players.Count; i++)
+            {
+                Player player = players[i];
+                if (player == excludedPlayer || this.ShouldSkipPlayer(player))
+                {
+                    continue;
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool AllowAutoRecordStartNow()
+        {
+            if (this.settings == null || !this.settings.RecordOnlyDuringGames)
+            {
+                return true;
+            }
+
+            return this.IsGameInProgress();
+        }
+
+        private bool IsGameInProgress()
+        {
+            return IsInGameState(this.BuildGameState());
         }
 
         private bool HasEnoughPlayersToAutoRecord()
