@@ -29,6 +29,7 @@ namespace PuckReplayMod
         private bool initialized;
         private bool isRecordingSuppressed;
         private bool autoRecordingPausedByManualStop;
+        private string lastObservedPhase;
         private bool startRequested;
         private bool scoreboardSnapshotRequested;
         private bool firstTickLogged;
@@ -94,6 +95,7 @@ namespace PuckReplayMod
         {
             this.Unsubscribe();
             this.StopRecording(true, "mod disabled");
+            this.WaitForPendingSaves("mod shutdown");
             this.initialized = false;
         }
 
@@ -435,6 +437,31 @@ namespace PuckReplayMod
             }
         }
 
+        private void WaitForPendingSaves(string reason)
+        {
+            if (this.pendingSaveTasks.Count == 0)
+            {
+                return;
+            }
+
+            // Saves run on background tasks; on shutdown the process would otherwise exit before
+            // the last match finished writing, stranding it as an unfinished temp recording.
+            ReplayModLog.Info("Waiting for " + this.pendingSaveTasks.Count + " replay save(s) to finish (" + reason + ").");
+            try
+            {
+                if (!Task.WaitAll(this.pendingSaveTasks.ToArray(), 15000))
+                {
+                    ReplayModLog.Warning("Timed out waiting for replay saves; an unfinished recording may remain in the temp folder for recovery.");
+                }
+            }
+            catch (AggregateException)
+            {
+                // Faulted saves are logged individually by PollPendingSaves below.
+            }
+
+            this.PollPendingSaves();
+        }
+
         private void Subscribe()
         {
             EventManager.AddEventListener("Event_OnClientStopped", this.Event_OnClientStopped);
@@ -512,19 +539,40 @@ namespace PuckReplayMod
             // the signal to flush and save the match currently being recorded.
             this.autoRecordingPausedByManualStop = false;
             this.StopRecording(true, "server stopped");
+            this.WaitForPendingSaves("server stopped");
             this.ClearActiveObjects();
         }
 
         private void Event_Everyone_OnGameStateChanged(Dictionary<string, object> message)
         {
+            GameStatePayload gameState = this.BuildGameState();
+            string previousPhase = this.lastObservedPhase;
+            this.lastObservedPhase = gameState != null ? gameState.Phase : null;
+            this.ResumeAutoRecordingOnNewGame(previousPhase, gameState);
             if (!this.EnsureRecording("game state observed"))
             {
                 return;
             }
 
-            GameStatePayload gameState = this.BuildGameState();
             this.RecordEvent("GameState", gameState);
             this.HandleSplitRecordingGameState(gameState);
+        }
+
+        private void ResumeAutoRecordingOnNewGame(string previousPhase, GameStatePayload gameState)
+        {
+            if (!this.autoRecordingPausedByManualStop || gameState == null)
+            {
+                return;
+            }
+
+            // PreGame is only ever entered when a new match starts, so a manual stop pauses
+            // automatic recording for the remainder of the current game rather than silently
+            // disabling it for the rest of the session.
+            if (gameState.Phase == "PreGame" && previousPhase != "PreGame")
+            {
+                this.autoRecordingPausedByManualStop = false;
+                ReplayModLog.Info("Automatic recording resumed for the next game after a manual stop.");
+            }
         }
 
         private void Event_Everyone_OnPlayerSpawned(Dictionary<string, object> message)
@@ -1525,7 +1573,18 @@ namespace PuckReplayMod
 
         private bool IsGameInProgress()
         {
-            return IsInGameState(this.BuildGameState());
+            GameManager gameManager = NetworkBehaviourSingleton<GameManager>.Instance;
+            if (gameManager == null || gameManager.GameState == null || gameManager.Period <= 0)
+            {
+                return false;
+            }
+
+            GamePhase phase = gameManager.Phase;
+            return phase != GamePhase.None &&
+                phase != GamePhase.Warmup &&
+                phase != GamePhase.PreGame &&
+                phase != GamePhase.GameOver &&
+                phase != GamePhase.PostGame;
         }
 
         private bool HasEnoughPlayersToAutoRecord()

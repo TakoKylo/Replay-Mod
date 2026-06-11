@@ -73,6 +73,22 @@ namespace PuckReplayMod
 
             if (this.IsDedicatedServer)
             {
+                // No UI exists on a dedicated server, so recordings left behind by a crash or
+                // hard kill have to be recovered automatically at startup; this runs before any
+                // new recording can create its own temp file.
+                try
+                {
+                    ReplayRecoveryResult recovery = this.Storage.RecoverUnfinishedRecordings();
+                    if (recovery.FoundCount > 0)
+                    {
+                        ReplayModLog.Info("Startup replay recovery: " + recovery.RecoveredCount + " recovered, " + recovery.FailedCount + " failed.");
+                    }
+                }
+                catch (Exception exception)
+                {
+                    ReplayModLog.Warning("Startup replay recovery failed: " + exception.Message);
+                }
+
                 // A headless dedicated server has no in-game UI or replay viewer; only the
                 // recorder runs, capturing the server-authoritative match and saving it locally.
                 bool serverRecordingEnabled = this.Settings == null || this.Settings.EnableServerSideRecording;

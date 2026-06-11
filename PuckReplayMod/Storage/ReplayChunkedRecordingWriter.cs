@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using Newtonsoft.Json;
@@ -10,6 +11,10 @@ namespace PuckReplayMod
     {
         private const int MaxEventsPerChunk = 300;
         private const int MaxChunkPayloadBytes = 1024 * 1024;
+        // Flush-to-disk (fsync) stalls the game thread for several milliseconds, so it runs on a
+        // time budget instead of every chunk. Sealed chunks are still pushed to the OS cache per
+        // chunk and survive a process crash; only a full power loss can lose this window.
+        private const int DurableFlushIntervalSeconds = 30;
 
         private readonly string tempPath;
         private readonly FileStream tempStream;
@@ -24,6 +29,7 @@ namespace PuckReplayMod
         private int currentChunkFirstTick;
         private int currentChunkLastTick;
         private int currentChunkEventCount;
+        private long lastDurableFlushTimestamp;
 
         public ReplayChunkedRecordingWriter(string tempPath, ReplayHeaderDto header)
         {
@@ -48,6 +54,7 @@ namespace PuckReplayMod
             this.chunkWriter = new BinaryWriter(this.chunkPayload, Encoding.UTF8);
             this.currentChunkFirstTick = -1;
             this.currentChunkLastTick = -1;
+            this.lastDurableFlushTimestamp = Stopwatch.GetTimestamp();
             this.WriteRecoveryManifest();
         }
 
@@ -193,23 +200,17 @@ namespace PuckReplayMod
             }
 
             this.chunkWriter.Flush();
-            byte[] payload = this.chunkPayload.ToArray();
             long tempOffset = this.tempStream.Position;
             ReplayBinarySerializer.WriteFourCharacterCode(this.tempWriter, ReplayBinarySerializer.ChunkMagic);
             this.tempWriter.Write(this.currentChunkFirstTick);
             this.tempWriter.Write(this.currentChunkLastTick);
             this.tempWriter.Write(this.currentChunkEventCount);
-            this.tempWriter.Write(payload.Length);
-            this.tempWriter.Write(payload);
+            this.tempWriter.Write((int)this.chunkPayload.Length);
+            // WriteTo streams the buffered chunk directly into the temp file; ToArray here would
+            // allocate a large-object-heap copy per chunk that Unity's non-compacting GC retains
+            // until a full collection, ballooning the heap on long server sessions.
+            this.chunkPayload.WriteTo(this.tempStream);
             this.tempWriter.Flush();
-            try
-            {
-                this.tempStream.Flush(true);
-            }
-            catch
-            {
-                this.tempStream.Flush();
-            }
 
             this.chunks.Add(new ReplayChunkRecord
             {
@@ -224,6 +225,26 @@ namespace PuckReplayMod
             this.currentChunkFirstTick = -1;
             this.currentChunkLastTick = -1;
             this.currentChunkEventCount = 0;
+
+            long now = Stopwatch.GetTimestamp();
+            if (now - this.lastDurableFlushTimestamp >= Stopwatch.Frequency * DurableFlushIntervalSeconds)
+            {
+                this.lastDurableFlushTimestamp = now;
+                try
+                {
+                    this.tempStream.Flush(true);
+                }
+                catch
+                {
+                    this.tempStream.Flush();
+                }
+
+                this.UpdateRecoveryManifest();
+            }
+        }
+
+        private void UpdateRecoveryManifest()
+        {
             this.recoveryManifest.LastCompletedChunkUtcTicks = DateTime.UtcNow.Ticks;
             this.recoveryManifest.CompletedChunkCount = this.chunks.Count;
             this.recoveryManifest.CompletedEventCount = 0;

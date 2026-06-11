@@ -60,7 +60,7 @@ namespace PuckReplayMod
 
             parent.Add(CreateToggleRow(
                 "Only record during games",
-                "When enabled, automatic recording starts only once a match is underway and skips warmup, pre-game, and intermission. Turn this off to also record warmup. Manual recording ignores this rule.",
+                "When enabled, automatic recording waits for a match to be underway instead of starting during warmup or pre-game. Once started it records continuously, including intermissions. Turn this off to also record warmup. Manual recording ignores this rule.",
                 ui.Settings.RecordOnlyDuringGames,
                 out _,
                 delegate(bool value)
