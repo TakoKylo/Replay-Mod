@@ -13,32 +13,45 @@ namespace PuckReplayMod
 
         public static List<ReplayTimelineEntrySummary> Build(ReplaySessionData session, out int goalCount, out int markerCount, out List<ReplayGameSegmentSummary> gameSegments)
         {
-            goalCount = 0;
-            markerCount = 0;
-            List<ReplayTimelineEntrySummary> entries = new List<ReplayTimelineEntrySummary>();
-            gameSegments = new List<ReplayGameSegmentSummary>();
-            HashSet<int> periodStarts = new HashSet<int>();
-            HashSet<int> periodEnds = new HashSet<int>();
-            ReplayGameSegmentSummary activeGame = null;
-            GameStatePayload latestGameState = null;
-            if (session == null || session.Events == null)
+            Accumulator accumulator = new Accumulator();
+            if (session != null && session.Events != null)
             {
-                return entries;
+                for (int i = 0; i < session.Events.Count; i++)
+                {
+                    accumulator.Add(session.Events[i]);
+                }
             }
 
-            for (int i = 0; i < session.Events.Count; i++)
+            int totalTicks = session != null && session.Header != null ? session.Header.TotalTicks : 0;
+            return accumulator.Complete(totalTicks, out goalCount, out markerCount, out gameSegments);
+        }
+
+        // Incremental form of Build: fed one event at a time so the timeline can be assembled while
+        // streaming a replay off disk, instead of materializing the whole (mostly TransformFrame)
+        // event list in memory.
+        internal sealed class Accumulator
+        {
+            private readonly List<ReplayTimelineEntrySummary> entries = new List<ReplayTimelineEntrySummary>();
+            private readonly List<ReplayGameSegmentSummary> gameSegments = new List<ReplayGameSegmentSummary>();
+            private readonly HashSet<int> periodStarts = new HashSet<int>();
+            private readonly HashSet<int> periodEnds = new HashSet<int>();
+            private ReplayGameSegmentSummary activeGame;
+            private GameStatePayload latestGameState;
+            private int goalCount;
+            private int markerCount;
+
+            public void Add(ReplayEventDto replayEvent)
             {
-                ReplayEventDto replayEvent = session.Events[i];
                 if (replayEvent == null)
                 {
-                    continue;
+                    return;
                 }
 
                 if (replayEvent.Type == "GoalScored")
                 {
                     GoalScoredPayload goal = replayEvent.Payload as GoalScoredPayload;
-                    goalCount++;
-                    entries.Add(new ReplayTimelineEntrySummary
+                    this.goalCount++;
+                    this.entries.Add(new ReplayTimelineEntrySummary
                     {
                         Tick = Math.Max(0, replayEvent.Tick),
                         Type = "Goal",
@@ -49,31 +62,31 @@ namespace PuckReplayMod
                 }
                 else if (replayEvent.Type == "Marker")
                 {
-                    markerCount++;
-                    entries.Add(new ReplayTimelineEntrySummary
+                    this.markerCount++;
+                    this.entries.Add(new ReplayTimelineEntrySummary
                     {
                         Tick = Math.Max(0, replayEvent.Tick),
                         Type = "Marker",
                         Team = string.Empty,
-                        Label = "Marker " + markerCount,
-                        Tooltip = "Marker " + markerCount
+                        Label = "Marker " + this.markerCount,
+                        Tooltip = "Marker " + this.markerCount
                     });
                 }
                 else if (replayEvent.Type == "GameState")
                 {
                     GameStatePayload gameState = replayEvent.Payload as GameStatePayload;
                     int tick = Math.Max(0, replayEvent.Tick);
-                    if (ShouldResetPeriodMarkerState(latestGameState, gameState))
+                    if (ShouldResetPeriodMarkerState(this.latestGameState, gameState))
                     {
-                        periodStarts.Clear();
-                        periodEnds.Clear();
+                        this.periodStarts.Clear();
+                        this.periodEnds.Clear();
                     }
 
-                    AddPeriodTimelineEntries(entries, periodStarts, periodEnds, tick, gameState);
-                    ApplyGameSegmentState(gameSegments, ref activeGame, tick, gameState);
+                    AddPeriodTimelineEntries(this.entries, this.periodStarts, this.periodEnds, tick, gameState);
+                    ApplyGameSegmentState(this.gameSegments, ref this.activeGame, tick, gameState);
                     if (gameState != null)
                     {
-                        latestGameState = gameState;
+                        this.latestGameState = gameState;
                     }
                 }
                 else if (replayEvent.Type == "InitialSnapshot")
@@ -82,33 +95,40 @@ namespace PuckReplayMod
                     if (snapshot != null)
                     {
                         int tick = Math.Max(0, replayEvent.Tick);
-                        AddPeriodTimelineEntries(entries, periodStarts, periodEnds, tick, snapshot.GameState);
-                        ApplyGameSegmentState(gameSegments, ref activeGame, tick, snapshot.GameState);
+                        AddPeriodTimelineEntries(this.entries, this.periodStarts, this.periodEnds, tick, snapshot.GameState);
+                        ApplyGameSegmentState(this.gameSegments, ref this.activeGame, tick, snapshot.GameState);
                         if (snapshot.GameState != null)
                         {
-                            latestGameState = snapshot.GameState;
+                            this.latestGameState = snapshot.GameState;
                         }
                     }
                 }
             }
 
-            if (activeGame != null)
+            public List<ReplayTimelineEntrySummary> Complete(int totalTicks, out int goalCount, out int markerCount, out List<ReplayGameSegmentSummary> gameSegments)
             {
-                activeGame.EndTick = Math.Max(activeGame.StartTick, session.Header != null ? session.Header.TotalTicks : activeGame.StartTick);
-                ApplySegmentScore(activeGame, latestGameState);
-            }
-
-            entries.Sort(delegate(ReplayTimelineEntrySummary left, ReplayTimelineEntrySummary right)
-            {
-                int tickCompare = left.Tick.CompareTo(right.Tick);
-                if (tickCompare != 0)
+                if (this.activeGame != null)
                 {
-                    return tickCompare;
+                    this.activeGame.EndTick = Math.Max(this.activeGame.StartTick, totalTicks);
+                    ApplySegmentScore(this.activeGame, this.latestGameState);
                 }
 
-                return string.Compare(left.Type, right.Type, StringComparison.Ordinal);
-            });
-            return entries;
+                this.entries.Sort(delegate(ReplayTimelineEntrySummary left, ReplayTimelineEntrySummary right)
+                {
+                    int tickCompare = left.Tick.CompareTo(right.Tick);
+                    if (tickCompare != 0)
+                    {
+                        return tickCompare;
+                    }
+
+                    return string.Compare(left.Type, right.Type, StringComparison.Ordinal);
+                });
+
+                goalCount = this.goalCount;
+                markerCount = this.markerCount;
+                gameSegments = this.gameSegments;
+                return this.entries;
+            }
         }
 
         private static string FormatGoalLabel(GoalScoredPayload goal)
