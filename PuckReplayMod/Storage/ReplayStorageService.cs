@@ -270,7 +270,9 @@ namespace PuckReplayMod
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
             string finalPath = this.GetUniqueFilePath(this.ReplaysDirectory, this.BuildReplayFileName(header));
+            string assemblingPath = Path.Combine(this.TempDirectory, Path.GetFileName(finalPath) + ".assembling.tmp");
 
+            long sizeBytes;
             try
             {
                 if (writer == null)
@@ -278,28 +280,18 @@ namespace PuckReplayMod
                     throw new InvalidOperationException("Replay chunk writer is missing.");
                 }
 
-                writer.Complete(finalPath, header);
-                new ReplayFileReader().ReadSummary(finalPath, this.SummariesDirectory);
-
-                if (minimumLengthSeconds > 0)
+                if (File.Exists(assemblingPath))
                 {
-                    this.CleanupShortReplays(minimumLengthSeconds);
+                    File.Delete(assemblingPath);
                 }
 
-                if (storageLimitMb > 0)
-                {
-                    this.CleanupOldReplays(storageLimitMb);
-                }
-
-                FileInfo file = new FileInfo(finalPath);
-                stopwatch.Stop();
-                return new ReplaySaveResult
-                {
-                    Success = true,
-                    FilePath = finalPath,
-                    SizeBytes = file.Length,
-                    ElapsedMilliseconds = stopwatch.ElapsedMilliseconds
-                };
+                // Assemble into the temp folder, then publish into the library with an atomic move.
+                // A crash or hard server stop during finalize can never leave a half-written replay
+                // in the library, and the recoverable chunk temp survives until the publish lands.
+                writer.Complete(assemblingPath, header);
+                File.Move(assemblingPath, finalPath);
+                writer.DiscardWorkingFiles();
+                sizeBytes = new FileInfo(finalPath).Length;
             }
             catch (Exception exception)
             {
@@ -308,6 +300,17 @@ namespace PuckReplayMod
                     if (writer != null)
                     {
                         writer.Abort();
+                    }
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    if (File.Exists(assemblingPath))
+                    {
+                        File.Delete(assemblingPath);
                     }
                 }
                 catch
@@ -334,6 +337,37 @@ namespace PuckReplayMod
                     ElapsedMilliseconds = stopwatch.ElapsedMilliseconds
                 };
             }
+
+            // The replay is durably published. Summary indexing and retention are best-effort and
+            // must never delete or fail the just-saved match — the summary is rebuilt on demand and
+            // a transient I/O hiccup on a busy server should not cost a recorded game.
+            try
+            {
+                new ReplayFileReader().ReadSummary(finalPath, this.SummariesDirectory);
+
+                if (minimumLengthSeconds > 0)
+                {
+                    this.CleanupShortReplays(minimumLengthSeconds);
+                }
+
+                if (storageLimitMb > 0)
+                {
+                    this.CleanupOldReplays(storageLimitMb);
+                }
+            }
+            catch (Exception exception)
+            {
+                ReplayModLog.Warning("Replay saved but post-save summary/retention failed for " + finalPath + ": " + exception.Message);
+            }
+
+            stopwatch.Stop();
+            return new ReplaySaveResult
+            {
+                Success = true,
+                FilePath = finalPath,
+                SizeBytes = sizeBytes,
+                ElapsedMilliseconds = stopwatch.ElapsedMilliseconds
+            };
         }
 
         public List<ReplayRecoveryCandidate> GetRecoverableRecordings()
@@ -369,6 +403,10 @@ namespace PuckReplayMod
                 return result;
             }
 
+            // A leftover "*.assembling.tmp" is always a superseded finalize that crashed between
+            // assembly and the atomic publish; the chunk temp below is the recoverable source.
+            this.SweepStaleAssemblingFiles();
+
             FileInfo[] files = new DirectoryInfo(this.TempDirectory).GetFiles("*.chunks.tmp");
             result.FoundCount = files.Length;
             foreach (FileInfo file in files)
@@ -388,6 +426,27 @@ namespace PuckReplayMod
             }
 
             return result;
+        }
+
+        private void SweepStaleAssemblingFiles()
+        {
+            try
+            {
+                FileInfo[] stale = new DirectoryInfo(this.TempDirectory).GetFiles("*.assembling.tmp");
+                foreach (FileInfo file in stale)
+                {
+                    try
+                    {
+                        file.Delete();
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
         }
 
         public ReplayRecoveryResult DiscardUnfinishedRecordings()
