@@ -182,6 +182,46 @@ namespace PuckReplayMod
             }
         }
 
+        // Pushes every event through `visit` one at a time without ever holding the whole match in
+        // memory. Building the save-time timeline summary this way keeps finalize from reloading a
+        // full (mostly TransformFrame) recording into the managed heap, which on Unity's
+        // non-compacting GC would otherwise spike committed RAM on tight servers.
+        public static void StreamEvents(string filePath, Action<ReplayEventDto> visit)
+        {
+            if (visit == null)
+            {
+                throw new ArgumentNullException("visit");
+            }
+
+            using (FileStream stream = File.OpenRead(filePath))
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                int containerVersion = ReadAndValidatePrelude(reader);
+                ReplayHeaderDto header = ReadHeader(reader);
+                if (containerVersion >= ChunkedFormatVersion)
+                {
+                    ReplayChunkedFileIndex index = ReadChunkedIndex(reader, containerVersion, header);
+                    for (int i = 0; i < index.Chunks.Count; i++)
+                    {
+                        StreamChunkEvents(reader, containerVersion, index.Chunks[i], visit);
+                    }
+
+                    return;
+                }
+
+                int eventCount = reader.ReadInt32();
+                if (eventCount < 0)
+                {
+                    throw new InvalidDataException("Replay event count is invalid.");
+                }
+
+                for (int i = 0; i < eventCount; i++)
+                {
+                    visit(ReadEvent(reader, containerVersion));
+                }
+            }
+        }
+
         internal static void WritePrelude(BinaryWriter writer, int containerVersion)
         {
             WriteMagic(writer);
@@ -531,6 +571,34 @@ namespace PuckReplayMod
                 {
                     events.Add(replayEvent);
                 }
+            }
+
+            stream.Seek(payloadEnd, SeekOrigin.Begin);
+        }
+
+        private static void StreamChunkEvents(BinaryReader reader, int containerVersion, ReplayChunkIndexEntry chunk, Action<ReplayEventDto> visit)
+        {
+            Stream stream = reader.BaseStream;
+            stream.Seek(chunk.Offset, SeekOrigin.Begin);
+            string chunkMagic = ReadFourCharacterCode(reader);
+            if (chunkMagic != ChunkMagic)
+            {
+                throw new InvalidDataException("Replay chunk magic is invalid.");
+            }
+
+            int firstTick = reader.ReadInt32();
+            int lastTick = reader.ReadInt32();
+            int eventCount = reader.ReadInt32();
+            int payloadLength = reader.ReadInt32();
+            if (eventCount != chunk.EventCount || firstTick != chunk.FirstTick || lastTick != chunk.LastTick || payloadLength < 0)
+            {
+                throw new InvalidDataException("Replay chunk header does not match its index.");
+            }
+
+            long payloadEnd = stream.Position + payloadLength;
+            for (int eventIndex = 0; eventIndex < eventCount; eventIndex++)
+            {
+                visit(ReadEvent(reader, containerVersion));
             }
 
             stream.Seek(payloadEnd, SeekOrigin.Begin);
