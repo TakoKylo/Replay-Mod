@@ -307,8 +307,8 @@ namespace PuckReplayMod
                 return true;
             }
 
-            Dictionary<string, Action<Dictionary<string, object>>> events =
-                EventsField != null ? EventsField.GetValue(null) as Dictionary<string, Action<Dictionary<string, object>>> : null;
+            Dictionary<string, List<Action<Dictionary<string, object>>>> events =
+                EventsField != null ? EventsField.GetValue(null) as Dictionary<string, List<Action<Dictionary<string, object>>>> : null;
             if (events == null || !events.ContainsKey(eventName))
             {
                 return false;
@@ -326,22 +326,22 @@ namespace PuckReplayMod
                 message.Add("eventName", eventName);
             }
 
-            Action<Dictionary<string, object>> action = events[eventName];
-            if (action == null)
+            List<Action<Dictionary<string, object>>> listeners = events[eventName];
+            if (listeners == null)
             {
                 return false;
             }
 
-            foreach (Delegate listener in action.GetInvocationList())
+            foreach (Action<Dictionary<string, object>> listener in new List<Action<Dictionary<string, object>>>(listeners))
             {
-                if (IsGameModeStateListener(listener))
+                if (listener == null || IsGameModeStateListener(listener))
                 {
                     continue;
                 }
 
                 try
                 {
-                    ((Action<Dictionary<string, object>>)listener)(message);
+                    listener(message);
                 }
                 catch (Exception exception)
                 {
