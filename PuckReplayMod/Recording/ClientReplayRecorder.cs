@@ -906,7 +906,8 @@ namespace PuckReplayMod
             return gameState != null &&
                 (gameState.Phase == "GameOver" ||
                     gameState.Phase == "PostGame" ||
-                    gameState.Phase == "Warmup");
+                    gameState.Phase == "Warmup" ||
+                    gameState.Phase == "PreGame");   // votestart (/vs) restart: Play->PreGame, no GameOver/Warmup
         }
 
         private void PollAutomaticRecordingThreshold()

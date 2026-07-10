@@ -88,7 +88,7 @@ namespace PuckReplayMod
             int goalCount;
             int markerCount;
             List<ReplayGameSegmentSummary> gameSegments;
-            List<ReplayTimelineEntrySummary> timelineEvents = this.GetTimelineEvents(filePath, cachedSummary, out goalCount, out markerCount, out gameSegments);
+            List<ReplayTimelineEntrySummary> timelineEvents = this.GetTimelineEvents(filePath, isBinaryReplay, header.TotalTicks, cachedSummary, out goalCount, out markerCount, out gameSegments);
             ReplayFileSummary summary = new ReplayFileSummary
             {
                 FilePath = filePath,
@@ -477,7 +477,7 @@ namespace PuckReplayMod
             }
         }
 
-        private List<ReplayTimelineEntrySummary> GetTimelineEvents(string filePath, ReplayFileSummary cachedSummary, out int goalCount, out int markerCount, out List<ReplayGameSegmentSummary> gameSegments)
+        private List<ReplayTimelineEntrySummary> GetTimelineEvents(string filePath, bool isBinaryReplay, int totalTicks, ReplayFileSummary cachedSummary, out int goalCount, out int markerCount, out List<ReplayGameSegmentSummary> gameSegments)
         {
             goalCount = cachedSummary != null ? cachedSummary.GoalCount : 0;
             markerCount = cachedSummary != null ? cachedSummary.MarkerCount : 0;
@@ -491,6 +491,16 @@ namespace PuckReplayMod
 
             try
             {
+                if (isBinaryReplay)
+                {
+                    // Stream the events past the timeline accumulator so building the summary at save
+                    // time never holds the whole match in memory — the finalize that follows a chunked
+                    // recording would otherwise reload every TransformFrame and spike server RAM.
+                    ReplayTimelineIndexBuilder.Accumulator accumulator = new ReplayTimelineIndexBuilder.Accumulator();
+                    ReplayBinarySerializer.StreamEvents(filePath, accumulator.Add);
+                    return accumulator.Complete(totalTicks, out goalCount, out markerCount, out gameSegments);
+                }
+
                 ReplaySessionData session = this.Load(filePath);
                 return ReplayTimelineIndexBuilder.Build(session, out goalCount, out markerCount, out gameSegments);
             }

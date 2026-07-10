@@ -101,21 +101,26 @@ namespace PuckReplayMod
             });
         }
 
-        public void Complete(string finalPath, ReplayHeaderDto header)
+        // Assembles the recorded chunks into a single replay container at outputPath. The caller
+        // publishes that file into the library with an atomic File.Move and then calls
+        // DiscardWorkingFiles(); the chunk temp + recovery manifest are deliberately left on disk
+        // until the publish succeeds so a crash or hard server stop mid-finalize is still
+        // recoverable on the next startup instead of leaving a half-written file in the library.
+        public void Complete(string outputPath, ReplayHeaderDto header)
         {
             this.ThrowIfDisposed();
-            if (string.IsNullOrEmpty(finalPath))
+            if (string.IsNullOrEmpty(outputPath))
             {
-                throw new ArgumentException("Final path is empty.", "finalPath");
+                throw new ArgumentException("Output path is empty.", "outputPath");
             }
 
             this.FlushChunk();
             this.tempWriter.Flush();
             this.tempStream.Flush();
 
-            Directory.CreateDirectory(Path.GetDirectoryName(finalPath));
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
             List<ReplayChunkRecord> finalIndex = new List<ReplayChunkRecord>(this.chunks.Count);
-            using (FileStream finalStream = File.Create(finalPath))
+            using (FileStream finalStream = File.Create(outputPath))
             using (BinaryWriter finalWriter = new BinaryWriter(finalStream, Encoding.UTF8))
             {
                 ReplayBinarySerializer.WritePrelude(finalWriter, ReplayModConstants.ReplayBinaryFormatVersion);
@@ -164,9 +169,26 @@ namespace PuckReplayMod
                 ReplayBinarySerializer.WriteFourCharacterCode(finalWriter, ReplayBinarySerializer.FooterMagic);
                 finalWriter.Write(indexOffset);
                 finalWriter.Write(finalIndex.Count);
+
+                // fsync the assembled container so the caller's atomic publish moves durable bytes.
+                finalWriter.Flush();
+                try
+                {
+                    finalStream.Flush(true);
+                }
+                catch
+                {
+                    finalStream.Flush();
+                }
             }
 
             this.Dispose();
+        }
+
+        // Removes the working chunk temp and its recovery manifest. Called by the storage service
+        // only after the assembled replay has been atomically published into the library.
+        public void DiscardWorkingFiles()
+        {
             TryDelete(this.tempPath);
             TryDelete(this.recoveryPath);
         }
