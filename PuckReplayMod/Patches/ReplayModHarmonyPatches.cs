@@ -307,9 +307,11 @@ namespace PuckReplayMod
                 return true;
             }
 
-            Dictionary<string, Action<Dictionary<string, object>>> events =
-                EventsField != null ? EventsField.GetValue(null) as Dictionary<string, Action<Dictionary<string, object>>> : null;
-            if (events == null || !events.ContainsKey(eventName))
+            // Read the current listeners for this event, tolerating both EventManager.events shapes:
+            // B897's Dictionary<string, Action<...>> (multicast delegate) and B1149's
+            // Dictionary<string, List<Action<...>>>. Keeps one DLL correct on both builds.
+            List<Action<Dictionary<string, object>>> listeners = GetGameStateEventListeners(eventName);
+            if (listeners == null)
             {
                 return false;
             }
@@ -326,22 +328,16 @@ namespace PuckReplayMod
                 message.Add("eventName", eventName);
             }
 
-            Action<Dictionary<string, object>> action = events[eventName];
-            if (action == null)
+            foreach (Action<Dictionary<string, object>> listener in listeners)
             {
-                return false;
-            }
-
-            foreach (Delegate listener in action.GetInvocationList())
-            {
-                if (IsGameModeStateListener(listener))
+                if (listener == null || IsGameModeStateListener(listener))
                 {
                     continue;
                 }
 
                 try
                 {
-                    ((Action<Dictionary<string, object>>)listener)(message);
+                    listener(message);
                 }
                 catch (Exception exception)
                 {
@@ -350,6 +346,46 @@ namespace PuckReplayMod
             }
 
             return false;
+        }
+
+        // Returns a snapshot of the listeners registered for eventName, reading Puck's private
+        // EventManager.events field. Handles both the B897 shape (Dictionary<string, Action<...>>,
+        // a multicast delegate) and the B1149 shape (Dictionary<string, List<Action<...>>>).
+        // Returns null when the field is unreadable/unexpected or the event has no listeners.
+        private static List<Action<Dictionary<string, object>>> GetGameStateEventListeners(string eventName)
+        {
+            object rawEvents = EventsField != null ? EventsField.GetValue(null) : null;
+            if (rawEvents == null)
+            {
+                ReplayModLog.Warning("Could not read EventManager listeners for replay game-state re-dispatch; the field shape may have changed.");
+                return null;
+            }
+
+            if (rawEvents is Dictionary<string, List<Action<Dictionary<string, object>>>> listShaped)
+            {
+                return listShaped.TryGetValue(eventName, out List<Action<Dictionary<string, object>>> listeners) && listeners != null
+                    ? listeners
+                    : null;
+            }
+
+            if (rawEvents is Dictionary<string, Action<Dictionary<string, object>>> delegateShaped)
+            {
+                if (!delegateShaped.TryGetValue(eventName, out Action<Dictionary<string, object>> action) || action == null)
+                {
+                    return null;
+                }
+
+                List<Action<Dictionary<string, object>>> listeners = new List<Action<Dictionary<string, object>>>();
+                foreach (Delegate listener in action.GetInvocationList())
+                {
+                    listeners.Add((Action<Dictionary<string, object>>)listener);
+                }
+
+                return listeners;
+            }
+
+            ReplayModLog.Warning("EventManager.events has an unexpected type (" + rawEvents.GetType() + "); replay game-state re-dispatch skipped.");
+            return null;
         }
 
         private static bool IsGameModeStateListener(Delegate listener)
