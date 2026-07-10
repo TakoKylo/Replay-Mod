@@ -5,7 +5,7 @@ namespace PuckReplayMod
         public const string ModName = "Replay Mod";
         public const string ModGuid = "puck.replaymod.client";
         public const string ModVersion = "0.1.5";
-        public const string TargetGameVersion = "897";
+        public const string TargetGameVersion = "1153";
         public const string ReplayFileExtension = ".puckreplay";
         public const string ReplaySummaryFileSuffix = ".summary.json";
         public const string ReplayMagic = "PUCK_REPLAY_V2";

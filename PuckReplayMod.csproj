@@ -6,7 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Libs Include="libs_897\*.dll" Exclude="libs_897\System.*.dll" />
+    <Libs Include="libs_1153\*.dll" Exclude="libs_1153\System.*.dll" />
 
     <Reference Include="@(Libs)">
       <HintPath>%(Libs.FullPath)</HintPath>
